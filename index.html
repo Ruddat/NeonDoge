@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>VOID RUNNER - Stable</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', Courier, monospace; }
+        canvas { cursor: none; display: block; }
+        
+        /* UI Styling */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; padding: 20px;
+            box-sizing: border-box; pointer-events: none;
+            display: flex; justify-content: space-between; color: #0ff;
+            font-size: 18px; text-shadow: 0 0 10px #0ff;
+        }
+        .stat-box { background: rgba(0,0,0,0.7); padding: 15px; border: 2px solid #0ff; border-radius: 10px; }
+        h1 { margin: 0; font-size: 24px; color: #f0f; text-shadow: 0 0 10px #f0f; letter-spacing: 4px; }
+        p { margin: 5px 0 0 0; opacity: 0.9; }
+        .bar-bg { width: 200px; height: 10px; background: #333; margin-top: 5px; border-radius: 5px; }
+        .bar-fill { height: 100%; background: #0f0; box-shadow: 0 0 10px #0f0; width: 100%; transition: width 0.2s; }
+
+        /* Upgrade Menü */
+        #upgrade-menu {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100;
+        }
+        h2 { color: #fff; font-size: 40px; margin-bottom: 40px; text-shadow: 0 0 20px #fff; letter-spacing: 5px; }
+        .choices { display: flex; gap: 30px; }
+        .choice {
+            width: 200px; padding: 20px; border: 2px solid #fff; border-radius: 15px;
+            text-align: center; cursor: pointer; transition: 0.3s; background: rgba(255,255,255,0.1);
+            pointer-events: auto;
+        }
+        .choice:hover { transform: scale(1.1); border-color: #f0f; background: rgba(255, 0, 255, 0.2); box-shadow: 0 0 30px #f0f; }
+        .choice h3 { margin: 0 0 10px 0; color: #ff0; font-size: 24px; }
+        .choice p { font-size: 14px; color: #ccc; }
+        
+        /* Message Overlay */
+        #message {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #fff; font-size: 50px; text-align: center; display: none;
+            text-shadow: 0 0 30px #0ff; pointer-events: none; z-index: 50;
+            animation: pulse 0.5s infinite alternate;
+        }
+        @keyframes pulse { from { opacity: 0.8; transform: translate(-50%, -50%) scale(1); } to { opacity: 1; transform: translate(-50%, -50%) scale(1.1); } }
+    </style>
+</head>
+<body>
+
+<!-- UI -->
+<div id="ui-layer">
+    <div class="stat-box">
+        <h1>VOID RUNNER</h1>
+        <p>SCORE: <span id="scoreVal">0</span></p>
+        <p>NEXT LEVEL: <span id="nextLevelVal">1000</span></p>
+    </div>
+    <div class="stat-box">
+        <p>LEVEL: <span id="levelVal">1</span></p>
+        <p>HEALTH:</p>
+        <div class="bar-bg"><div class="bar-fill" id="healthBar"></div></div>
+        <p style="margin-top:10px">WEAPON: <span id="weaponVal">Standard</span></p>
+    </div>
+</div>
+
+<!-- Upgrade Menü -->
+<div id="upgrade-menu">
+    <h2>LEVEL UP! Wähle ein Upgrade:</h2>
+    <div class="choices" id="choicesContainer"></div>
+</div>
+
+<div id="message"></div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const msgBox = document.getElementById('message');
+    const upgradeMenu = document.getElementById('upgrade-menu');
+    const choicesContainer = document.getElementById('choicesContainer');
+    const healthBar = document.getElementById('healthBar');
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // --- SPIEL VARIABELN ---
+    let score = 0;
+    let health = 100;
+    let level = 1;
+    let frameCount = 0;
+    let gameRunning = true;
+    let isPaused = false;
+
+    const levelThresholds = [1000, 3000, 5000, 8000, 12000, 17000, 23000, 30000];
+
+    const player = { x: 150, y: canvas.height/2 };
+    
+    let satellites = [];
+    let magnetRange = 0;
+    let bulletSizeMod = 1;
+    let bulletCount = 1;
+    let playerSpeed = 1;
+
+    let isInvincible = false;
+    let invincibleTimer = 0;
+
+    let bullets = [];
+    let enemies = [];
+    let particles = [];
+    let powerUps = [];
+    let worms = [];
+    let bosses = [];
+    let stars = [];
+
+    // --- INITIALISIERUNG ---
+    for (let i = 0; i < 150; i++) stars.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, size: Math.random() * 2, speed: Math.random() * 3 + 0.5 });
+
+    // --- INPUT ---
+    let mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+    let mouseDown = false;
+    canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+    canvas.addEventListener('mousedown', () => mouseDown = true);
+    canvas.addEventListener('mouseup', () => mouseDown = false);
+
+    // --- UPGRADE SYSTEM ---
+    const upgradesPool = [
+        { name: "Satellit", desc: "Eine Drohne kreist um dich und schießt.", action: () => { satellites.push({ angle: 0 }); } },
+        { name: "Magnet", desc: "Zieht Powerups von weiter an.", action: () => { magnetRange += 150; } },
+        { name: "Großkaliber", desc: "Deine Schüsse werden größer.", action: () => { bulletSizeMod += 0.5; } },
+        { name: "Turbo", desc: "Du fliegst schneller.", action: () => { playerSpeed += 0.3; } },
+        { name: "Heilung", desc: "+50 HP.", action: () => { health = Math.min(health + 50, 100); } },
+        { name: "Mehrschuss", desc: "Schießt ein extra Projektil.", action: () => { bulletCount++; } }
+    ];
+
+    function openUpgradeMenu() {
+        isPaused = true;
+        upgradeMenu.style.display = 'flex';
+        choicesContainer.innerHTML = '';
+        let options = [...upgradesPool].sort(() => Math.random() - 0.5).slice(0, 3);
+        options.forEach(opt => {
+            let div = document.createElement('div');
+            div.className = 'choice';
+            div.innerHTML = `<h3>${opt.name}</h3><p>${opt.desc}</p>`;
+            div.onclick = () => { opt.action(); closeUpgradeMenu(); };
+            choicesContainer.appendChild(div);
+        });
+    }
+
+    function closeUpgradeMenu() {
+        isPaused = false;
+        upgradeMenu.style.display = 'none';
+    }
+
+    // --- HAUPTSCHLEIFE ---
+    function update() {
+        if (!gameRunning) return;
+        if (isPaused) { requestAnimationFrame(update); return; }
+
+        frameCount++;
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        updateStars();
+
+        if (level <= levelThresholds.length && score >= levelThresholds[level-1]) {
+            levelUp();
+        }
+
+        handlePlayer();
+        handleTimers();
+        if (mouseDown && frameCount % 6 === 0) fireBullets();
+
+        handleSpawning();
+
+        updateBullets();
+        updateEnemies();
+        updateWorms(); 
+        updateBosses();
+        updatePowerUps();
+        updateParticles();
+        updateSatellites();
+        drawPlayer();
+        drawUI();
+
+        requestAnimationFrame(update);
+    }
+
+    function updateStars() {
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#fff';
+        stars.forEach(s => {
+            s.x -= s.speed;
+            if (s.x < 0) { s.x = canvas.width; s.y = Math.random() * canvas.height; }
+            ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2); ctx.fill();
+        });
+    }
+
+    function handlePlayer() {
+        let speed = 0.1 + (playerSpeed * 0.02);
+        player.x += (mouse.x - player.x) * speed;
+        player.y += (mouse.y - player.y) * speed;
+        if (player.x < 50) player.x = 50;
+        if (player.x > canvas.width - 50) player.x = canvas.width - 50;
+        if (player.y < 0) player.y = 0;
+        if (player.y > canvas.height) player.y = canvas.height;
+
+        if (frameCount % 2 === 0) {
+            particles.push({ x: player.x - 30, y: player.y + (Math.random()*16-8), size: 8, life: 20, color: '#0ff', vx: -3 });
+        }
+    }
+
+    function handleTimers() {
+        if (invincibleTimer > 0) invincibleTimer--;
+        if (invincibleTimer <= 0) isInvincible = false;
+    }
+
+    function updateSatellites() {
+        satellites.forEach(sat => {
+            sat.angle += 0.05;
+            let satX = player.x + Math.cos(sat.angle) * 60;
+            let satY = player.y + Math.sin(sat.angle) * 60;
+
+            ctx.shadowBlur = 10; ctx.shadowColor = '#f0f';
+            ctx.fillStyle = '#f0f';
+            ctx.beginPath(); ctx.arc(satX, satY, 6, 0, Math.PI*2); ctx.fill();
+            ctx.shadowBlur = 0;
+
+            if (frameCount % 20 === 0) {
+                bullets.push({ x: satX, y: satY, speed: 8, size: 3, color: '#f0f' });
+            }
+        });
+    }
+
+    function fireBullets() {
+        let baseCount = bulletCount;
+        for(let i=0; i<baseCount; i++) {
+            let angle = (i - (baseCount-1)/2) * 0.15;
+            let vy = Math.sin(angle) * 3;
+            bullets.push({ x: player.x + 20, y: player.y, speed: 12, vy: vy, size: 4 * bulletSizeMod, color: '#ff0' });
+        }
+    }
+
+    function updateBullets() {
+        // Rückwärts iterieren, um sicher zu splice-en
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            b.x += b.speed;
+            b.y += b.vy || 0;
+            
+            ctx.shadowBlur = 15; ctx.shadowColor = b.color || '#ff0';
+            ctx.fillStyle = b.color || '#ff0';
+            ctx.beginPath();
+            ctx.ellipse(b.x, b.y, b.size*2, b.size/2, 0, 0, Math.PI*2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            if (b.x > canvas.width || b.x < 0) bullets.splice(i, 1);
+        }
+    }
+
+    function handleSpawning() {
+        let bossActive = bosses.length > 0;
+        if (!bossActive && Math.random() < 0.03) spawnEnemy();
+        if (!bossActive && Math.random() < 0.003) spawnWorm();
+
+        if (level % 3 === 0 && !bossActive && !window.bossDefeatedThisLevel) {
+            spawnBoss();
+        }
+        
+        if (Math.random() < 0.005) spawnPowerUp();
+    }
+
+    // --- GEGNER & BOSSE & WÜRMER ---
+    
+    function spawnEnemy() {
+        enemies.push({
+            x: canvas.width + 50, y: Math.random() * canvas.height,
+            size: 20 + Math.random() * 20,
+            speed: 3 + (level * 0.3),
+            rotation: 0, rotSpeed: (Math.random() - 0.5) * 0.1
+        });
+    }
+
+    function updateEnemies() {
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            let e = enemies[i];
+            e.x -= e.speed; e.rotation += e.rotSpeed;
+            
+            ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.rotation);
+            ctx.shadowBlur = 10; ctx.shadowColor = '#f00';
+            ctx.fillStyle = '#f00';
+            ctx.beginPath();
+            for (let j = 0; j < 6; j++) { const angle = (Math.PI * 2 / 6) * j; const r = e.size * 0.9; if (j === 0) ctx.moveTo(r, 0); else ctx.lineTo(r * Math.cos(angle), r * Math.sin(angle)); }
+            ctx.closePath(); ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.restore();
+
+            if (checkCollisions(e, i, 'enemy')) continue; // Wenn tot, überspringen
+
+            if (e.x < -50) enemies.splice(i, 1);
+        }
+    }
+
+    function spawnWorm() {
+        let startY = Math.random() * (canvas.height - 200) + 100;
+        let segmentCount = 6 + Math.floor(level / 2);
+        let worm = {
+            segments: [],
+            speed: 2,
+            angle: 0
+        };
+        
+        for(let i=0; i<segmentCount; i++) {
+            worm.segments.push({
+                x: canvas.width + (i * 20),
+                y: startY,
+                size: i === 0 ? 20 : 15,
+                isHead: i === 0
+            });
+        }
+        worms.push(worm);
+    }
+
+    function updateWorms() {
+        // Rückwärts iterieren
+        for (let w = worms.length - 1; w >= 0; w--) {
+            let worm = worms[w];
+            let head = worm.segments[0];
+            
+            // Bewegung
+            head.x -= worm.speed;
+            worm.angle += 0.05;
+            head.y = head.y + Math.sin(worm.angle) * 3;
+
+            for(let i=1; i<worm.segments.length; i++) {
+                let current = worm.segments[i];
+                let target = worm.segments[i-1];
+                let dx = target.x - current.x;
+                let dy = target.y - current.y;
+                let distance = Math.sqrt(dx*dx + dy*dy);
+                if(distance > 15) { current.x += dx * 0.2; current.y += dy * 0.2; }
+            }
+
+            // Zeichnen und Kollision
+            let wormDead = false;
+            for (let s = worm.segments.length - 1; s >= 0; s--) {
+                let seg = worm.segments[s];
+                
+                ctx.shadowBlur = 15; ctx.shadowColor = '#d0d';
+                ctx.beginPath(); ctx.arc(seg.x, seg.y, seg.size, 0, Math.PI*2);
+                ctx.fillStyle = seg.isHead ? '#ffd700' : '#d0d';
+                ctx.fill();
+                ctx.shadowBlur = 0;
+
+                // Kollision Check für Segment
+                // Wir nutzen eine Modifizierte checkCollisions oder Logik hier:
+                
+                // 1. Kollision mit Spieler
+                if (!isInvincible && Math.hypot(player.x - seg.x, player.y - seg.y) < seg.size + 10) {
+                    health -= 20;
+                    createExplosion(seg.x, seg.y, '#f00');
+                    if (health <= 0) gameOver();
+                    destroyWorm(w); 
+                    wormDead = true;
+                    break;
+                }
+
+                // 2. Kollision mit Kugeln
+                for (let b = bullets.length - 1; b >= 0; b--) {
+                    let bullet = bullets[b];
+                    if(bullet.isEnemy) continue;
+
+                    if (Math.hypot(bullet.x - seg.x, bullet.y - seg.y) < seg.size) {
+                        bullets.splice(b, 1);
+                        
+                        if (seg.isHead) {
+                            score += 500;
+                            createMegaExplosion(seg.x, seg.y);
+                            showMessage("MEGA KILL!");
+                            destroyWorm(w);
+                            wormDead = true;
+                        } else {
+                            createExplosion(seg.x, seg.y, '#ffaa00');
+                            worm.segments.splice(s, 1);
+                            score += 50;
+                        }
+                        break; // Kugel verarbeitet
+                    }
+                }
+                if (wormDead) break;
+            }
+
+            if (wormDead) continue;
+
+            if (head.x < -100) worms.splice(w, 1);
+        }
+    }
+    
+    function destroyWorm(index) {
+        if (!worms[index]) return; // Sicherheitscheck
+        let worm = worms[index];
+        worm.segments.forEach(seg => createExplosion(seg.x, seg.y, '#d0d'));
+        worms.splice(index, 1);
+    }
+
+    function spawnBoss() {
+        showMessage("WARNUNG: BOSS INCOMING!");
+        bosses.push({
+            x: canvas.width + 200,
+            y: canvas.height / 2,
+            width: 120, height: 80,
+            hp: 500 + (level * 100),
+            maxHp: 500 + (level * 100),
+            speed: 2,
+            dirY: 1,
+            shootTimer: 0
+        });
+        window.bossSpawnedThisLevel = true;
+    }
+
+    function updateBosses() {
+        for (let i = bosses.length - 1; i >= 0; i--) {
+            let boss = bosses[i];
+            if (boss.x > canvas.width - 250) boss.x -= 2;
+            
+            boss.y += boss.speed * boss.dirY;
+            if (boss.y < 100 || boss.y > canvas.height - 100) boss.dirY *= -1;
+
+            boss.shootTimer++;
+            if (boss.shootTimer > 40) {
+                for(let j=-1; j<=1; j++) {
+                    bullets.push({ x: boss.x, y: boss.y + (j*20), speed: -6, vy: j*0.5, size: 8, color: '#f00', isEnemy: true });
+                }
+                boss.shootTimer = 0;
+            }
+
+            ctx.shadowBlur = 20; ctx.shadowColor = '#0f0';
+            ctx.fillStyle = '#0f0';
+            ctx.fillRect(boss.x, boss.y - boss.height/2, boss.width, boss.height);
+            
+            ctx.fillStyle = '#f00';
+            ctx.beginPath(); ctx.arc(boss.x, boss.y, 15, 0, Math.PI*2); ctx.fill();
+            ctx.shadowBlur = 0;
+
+            ctx.fillStyle = '#333';
+            ctx.fillRect(canvas.width/2 - 150, 80, 300, 20);
+            ctx.fillStyle = '#f00';
+            ctx.fillRect(canvas.width/2 - 150, 80, 300 * (boss.hp / boss.maxHp), 20);
+            ctx.fillStyle = '#fff';
+            ctx.fillText("BOSS", canvas.width/2 - 20, 95);
+
+            // Boss Kollision mit Kugeln
+            for (let b = bullets.length - 1; b >= 0; b--) {
+                let bullet = bullets[b];
+                if(!bullet.isEnemy && bullet.x > boss.x && bullet.x < boss.x + boss.width && bullet.y > boss.y - boss.height/2 && bullet.y < boss.y + boss.height/2) {
+                    boss.hp -= 10;
+                    createExplosion(bullet.x, bullet.y, '#fff');
+                    bullets.splice(b, 1);
+                }
+            }
+
+            // Boss Kollision mit Spieler
+            if (!isInvincible && player.x > boss.x && player.x < boss.x + boss.width && player.y > boss.y - boss.height/2 && player.y < boss.y + boss.height/2) {
+                health -= 50;
+                isInvincible = true; invincibleTimer = 60;
+                if (health <= 0) gameOver();
+            }
+
+            // Boss Tod
+            if (boss.hp <= 0) {
+                createMegaExplosion(boss.x, boss.y);
+                score += 2000;
+                showMessage("BOSS BESIEGT! +2000");
+                bosses.splice(i, 1);
+                window.bossDefeatedThisLevel = true;
+            }
+        }
+    }
+
+    // Universelle Kollisionsprüfung (vereinfacht für Enemies)
+    function checkCollisions(obj, index, type) {
+        // Spieler Kollision
+        if (!isInvincible && Math.hypot(player.x - obj.x, player.y - obj.y) < (obj.size || 10) + 10) {
+            health -= 20;
+            createExplosion(obj.x, obj.y, '#f00');
+            if(type === 'enemy') enemies.splice(index, 1);
+            if (health <= 0) gameOver();
+            return true;
+        }
+
+        // Kugel Kollision
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            if(b.isEnemy) continue;
+
+            if (Math.hypot(b.x - obj.x, b.y - obj.y) < (obj.size || 10)) {
+                bullets.splice(i, 1);
+                createExplosion(obj.x, obj.y, '#ffaa00');
+                if(type === 'enemy') enemies.splice(index, 1);
+                score += Math.floor(obj.size || 20);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function spawnPowerUp() {
+        const types = ['health', 'rapid'];
+        const type = types[Math.floor(Math.random() * types.length)];
+        let color = '#0f0', label = '+';
+        if (type === 'rapid') { color = '#ff0'; label = 'R'; }
+        powerUps.push({ x: canvas.width, y: Math.random() * canvas.height, size: 15, type: type, color: color, label: label, speed: 3 });
+    }
+
+    function updatePowerUps() {
+        for (let i = powerUps.length - 1; i >= 0; i--) {
+            let p = powerUps[i];
+            p.x -= p.speed;
+            
+            if(magnetRange > 0) {
+                let d = Math.hypot(player.x - p.x, player.y - p.y);
+                if(d < magnetRange) {
+                    let angle = Math.atan2(player.y - p.y, player.x - p.x);
+                    p.x += Math.cos(angle) * 5;
+                    p.y += Math.sin(angle) * 5;
+                }
+            }
+
+            ctx.shadowBlur = 15; ctx.shadowColor = p.color;
+            ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#000'; ctx.font = "bold 16px Arial"; ctx.textAlign = "center"; ctx.fillText(p.label, p.x, p.y + 5);
+            ctx.shadowBlur = 0;
+
+            if (Math.hypot(player.x - p.x, player.y - p.y) < 30) { 
+                activatePowerUp(p.type); 
+                powerUps.splice(i, 1); 
+            }
+            if (p.x < -50) powerUps.splice(i, 1);
+        }
+    }
+
+    function activatePowerUp(type) {
+        createExplosion(player.x, player.y, '#fff');
+        if (type === 'health') { health = Math.min(health + 30, 100); showMessage("REPAIRED!"); }
+        else if (type === 'rapid') { /* Logic optional */ showMessage("RAPID FIRE!"); }
+    }
+    
+    function createExplosion(x, y, color) { for (let i = 0; i < 10; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6, life: 30, color: color, size: 3 }); }
+    function createMegaExplosion(x, y) { for (let i = 0; i < 40; i++) particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 15, vy: (Math.random() - 0.5) * 15, life: 50, color: `hsl(${Math.random()*60}, 100%, 50%)`, size: Math.random() * 8 + 2 }); ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+    
+    function updateParticles() {
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.life--; p.x += p.vx || 0; p.y += p.vy || 0;
+            ctx.globalAlpha = p.life / 30; 
+            ctx.shadowBlur = 10; ctx.shadowColor = p.color;
+            ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size || 2, 0, Math.PI*2); ctx.fill();
+            ctx.shadowBlur = 0;
+            ctx.globalAlpha = 1.0;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+    }
+
+    function drawPlayer() {
+        ctx.save(); ctx.translate(player.x, player.y);
+        if (isInvincible && Math.floor(Date.now() / 100) % 2 === 0) { ctx.globalAlpha = 0.5; ctx.shadowBlur = 30; ctx.shadowColor = '#00f'; }
+        
+        ctx.shadowBlur = 20; ctx.shadowColor = '#0ff';
+        ctx.fillStyle = '#0af';
+        ctx.beginPath(); ctx.moveTo(25, 0); ctx.lineTo(-20, 18); ctx.lineTo(-10, 0); ctx.lineTo(-20, -18); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = '#0ff';
+        ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+
+    function levelUp() {
+        level++;
+        document.getElementById('levelVal').innerText = level;
+        openUpgradeMenu();
+        
+        if(level <= levelThresholds.length) {
+            document.getElementById('nextLevelVal').innerText = levelThresholds[level-1];
+        }
+    }
+
+    function showMessage(text) { msgBox.innerText = text; msgBox.style.display = 'block'; setTimeout(() => { msgBox.style.display = 'none'; }, 1500); }
+    function drawUI() { document.getElementById('scoreVal').innerText = score; healthBar.style.width = health + "%"; }
+    function gameOver() { gameRunning = false; setTimeout(() => { alert("GAME OVER\nScore: " + score + "\nLevel: " + level); location.reload(); }, 100); }
+    
+    window.addEventListener('resize', () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; });
+    update();
+</script>
+</body>
+</html>
