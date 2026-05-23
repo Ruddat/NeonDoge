@@ -6,15 +6,12 @@
     <style>
         body {
             margin: 0;
-            background: radial-gradient(circle at center, #071021 0%, #000 68%);
+            background: #000;
             overflow: hidden;
             font-family: 'Courier New', Courier, monospace;
         }
 
-        canvas {
-            cursor: none;
-            display: block;
-        }
+        canvas { cursor: none; display: block; }
 
         #ui-layer {
             position: absolute;
@@ -37,7 +34,8 @@
             padding: 15px;
             border: 2px solid #0ff;
             border-radius: 10px;
-            min-width: 210px;
+            min-width: 220px;
+            box-shadow: 0 0 22px rgba(0, 255, 255, .18);
         }
 
         h1 {
@@ -129,6 +127,7 @@
             pointer-events: none;
             z-index: 50;
             animation: pulse 0.5s infinite alternate;
+            white-space: pre-line;
         }
 
         @keyframes pulse {
@@ -144,6 +143,7 @@
         <p>SCORE: <span id="scoreVal">0</span></p>
         <p>NEXT LEVEL: <span id="nextLevelVal">1000</span></p>
         <p>THREAT: <span id="threatVal">1.0x</span></p>
+        <p>ZONE: <span id="biomeVal">Neon Orbit</span></p>
     </div>
 
     <div class="stat-box">
@@ -178,7 +178,7 @@
     const LIMITS = {
         bullets: 180,
         enemies: 42,
-        particles: 360,
+        particles: 380,
         powerUps: 6,
         worms: 4,
         bosses: 1,
@@ -186,8 +186,18 @@
         bulletCount: 4,
         bulletSize: 2.4,
         magnetRange: 420,
-        playerSpeed: 2.6
+        playerSpeed: 2.6,
+        scenery: 34
     };
+
+    const BIOMES = [
+        { name: 'Neon Orbit', bg1: '#020411', bg2: '#071b35', accent: '#00f6ff', accent2: '#ff00ff', enemy: '#ff1744', star: '#ffffff', grid: '#0ff', scenery: 'rings', speed: 1, spawn: 1, hazard: 0 },
+        { name: 'Crimson Rift', bg1: '#130006', bg2: '#320015', accent: '#ff1744', accent2: '#ff9100', enemy: '#ffea00', star: '#ffd6d6', grid: '#ff1744', scenery: 'embers', speed: 1.08, spawn: 1.08, hazard: 0.001 },
+        { name: 'Toxic Nebula', bg1: '#021005', bg2: '#143c16', accent: '#76ff03', accent2: '#00e676', enemy: '#d500f9', star: '#ccff90', grid: '#76ff03', scenery: 'bubbles', speed: .96, spawn: 1.12, hazard: 0.0012 },
+        { name: 'Violet Grid', bg1: '#070014', bg2: '#21004a', accent: '#b388ff', accent2: '#00e5ff', enemy: '#ff4081', star: '#e1bee7', grid: '#b388ff', scenery: 'grid', speed: 1.03, spawn: 1.06, hazard: 0 },
+        { name: 'Solar Wreckage', bg1: '#160900', bg2: '#4a2100', accent: '#ffab00', accent2: '#ff3d00', enemy: '#00e5ff', star: '#ffe0b2', grid: '#ffab00', scenery: 'debris', speed: 1.13, spawn: 1.0, hazard: 0.0016 },
+        { name: 'Ice Void', bg1: '#001018', bg2: '#00364d', accent: '#80d8ff', accent2: '#ffffff', enemy: '#ff00aa', star: '#e1f5fe', grid: '#80d8ff', scenery: 'crystals', speed: .9, spawn: .95, hazard: 0 }
+    ];
 
     let score = 0;
     let health = 100;
@@ -197,21 +207,13 @@
     let gameRunning = true;
     let isPaused = false;
     let bossDefeatedThisLevel = false;
+    let currentBiomeIndex = 0;
+    let transitionFrames = 0;
+    let screenShake = 0;
 
     const player = { x: 150, y: canvas.height / 2 };
-
-    const weapon = {
-        fireCooldown: 10,
-        cooldownLeft: 0,
-        bulletSizeMod: 1,
-        bulletCount: 1
-    };
-
-    const effects = {
-        rapid: 0,
-        shield: 0,
-        spread: 0
-    };
+    const weapon = { fireCooldown: 10, cooldownLeft: 0, bulletSizeMod: 1, bulletCount: 1 };
+    const effects = { rapid: 0, shield: 0, spread: 0 };
 
     let satellites = [];
     let magnetRange = 0;
@@ -226,15 +228,30 @@
     let worms = [];
     let bosses = [];
     let stars = [];
+    let sceneryObjects = [];
 
-    for (let i = 0; i < 170; i++) {
-        stars.push({
-            x: Math.random() * canvas.width,
-            y: Math.random() * canvas.height,
-            size: Math.random() * 2,
-            speed: Math.random() * 3 + 0.5
-        });
+    function activeBiome() { return BIOMES[currentBiomeIndex % BIOMES.length]; }
+
+    function initStars() {
+        stars = [];
+        for (let i = 0; i < 180; i++) {
+            stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                size: Math.random() * 2,
+                speed: Math.random() * 3 + 0.5,
+                alpha: .45 + Math.random() * .55
+            });
+        }
     }
+
+    function seedScenery() {
+        sceneryObjects = [];
+        for (let i = 0; i < 16; i++) spawnScenery(true);
+    }
+
+    initStars();
+    seedScenery();
 
     let mouse = { x: canvas.width / 2, y: canvas.height / 2 };
     let mouseDown = false;
@@ -243,74 +260,26 @@
     canvas.addEventListener('mouseup', () => mouseDown = false);
 
     const upgradesPool = [
-        {
-            name: 'Satellit',
-            desc: 'Eine Drohne kreist um dich und schießt. Maximal 3.',
-            current: () => `${satellites.length}/${LIMITS.satellites}`,
-            available: () => satellites.length < LIMITS.satellites,
-            action: () => satellites.push({ angle: Math.random() * Math.PI * 2, cooldown: 0 })
-        },
-        {
-            name: 'Magnet',
-            desc: 'Zieht Powerups aus größerer Entfernung an. Gedeckelt.',
-            current: () => `${magnetRange}/${LIMITS.magnetRange}`,
-            available: () => magnetRange < LIMITS.magnetRange,
-            action: () => { magnetRange = Math.min(LIMITS.magnetRange, magnetRange + 120); }
-        },
-        {
-            name: 'Großkaliber',
-            desc: 'Schüsse werden stärker, aber nicht endlos riesig.',
-            current: () => `${weapon.bulletSizeMod.toFixed(1)}x/${LIMITS.bulletSize}x`,
-            available: () => weapon.bulletSizeMod < LIMITS.bulletSize,
-            action: () => { weapon.bulletSizeMod = Math.min(LIMITS.bulletSize, weapon.bulletSizeMod + 0.35); }
-        },
-        {
-            name: 'Turbo',
-            desc: 'Bessere Steuerreaktion. Maximalwert verhindert Chaos.',
-            current: () => `${playerSpeed.toFixed(1)}x/${LIMITS.playerSpeed}x`,
-            available: () => playerSpeed < LIMITS.playerSpeed,
-            action: () => { playerSpeed = Math.min(LIMITS.playerSpeed, playerSpeed + 0.25); }
-        },
-        {
-            name: 'Heilung',
-            desc: '+45 HP. Überschreibt keine Balance.',
-            current: () => `${health}/100`,
-            available: () => health < 100,
-            action: () => { health = Math.min(health + 45, 100); }
-        },
-        {
-            name: 'Mehrschuss',
-            desc: 'Ein zusätzlicher permanenter Schuss. Maximal 4.',
-            current: () => `${weapon.bulletCount}/${LIMITS.bulletCount}`,
-            available: () => weapon.bulletCount < LIMITS.bulletCount,
-            action: () => { weapon.bulletCount = Math.min(LIMITS.bulletCount, weapon.bulletCount + 1); }
-        },
-        {
-            name: 'Kühlkörper',
-            desc: 'Reduziert den Waffen-Cooldown permanent. Minimalwert bleibt aktiv.',
-            current: () => `${weapon.fireCooldown} Frames`,
-            available: () => weapon.fireCooldown > 5,
-            action: () => { weapon.fireCooldown = Math.max(5, weapon.fireCooldown - 1); }
-        }
+        { name: 'Satellit', desc: 'Eine Drohne kreist um dich und schießt. Maximal 3.', current: () => `${satellites.length}/${LIMITS.satellites}`, available: () => satellites.length < LIMITS.satellites, action: () => satellites.push({ angle: Math.random() * Math.PI * 2, cooldown: 0 }) },
+        { name: 'Magnet', desc: 'Zieht Powerups aus größerer Entfernung an. Gedeckelt.', current: () => `${magnetRange}/${LIMITS.magnetRange}`, available: () => magnetRange < LIMITS.magnetRange, action: () => { magnetRange = Math.min(LIMITS.magnetRange, magnetRange + 120); } },
+        { name: 'Großkaliber', desc: 'Schüsse werden stärker, aber nicht endlos riesig.', current: () => `${weapon.bulletSizeMod.toFixed(1)}x/${LIMITS.bulletSize}x`, available: () => weapon.bulletSizeMod < LIMITS.bulletSize, action: () => { weapon.bulletSizeMod = Math.min(LIMITS.bulletSize, weapon.bulletSizeMod + 0.35); } },
+        { name: 'Turbo', desc: 'Bessere Steuerreaktion. Maximalwert verhindert Chaos.', current: () => `${playerSpeed.toFixed(1)}x/${LIMITS.playerSpeed}x`, available: () => playerSpeed < LIMITS.playerSpeed, action: () => { playerSpeed = Math.min(LIMITS.playerSpeed, playerSpeed + 0.25); } },
+        { name: 'Heilung', desc: '+45 HP. Überschreibt keine Balance.', current: () => `${health}/100`, available: () => health < 100, action: () => { health = Math.min(health + 45, 100); } },
+        { name: 'Mehrschuss', desc: 'Ein zusätzlicher permanenter Schuss. Maximal 4.', current: () => `${weapon.bulletCount}/${LIMITS.bulletCount}`, available: () => weapon.bulletCount < LIMITS.bulletCount, action: () => { weapon.bulletCount = Math.min(LIMITS.bulletCount, weapon.bulletCount + 1); } },
+        { name: 'Kühlkörper', desc: 'Reduziert den Waffen-Cooldown permanent. Minimalwert bleibt aktiv.', current: () => `${weapon.fireCooldown} Frames`, available: () => weapon.fireCooldown > 5, action: () => { weapon.fireCooldown = Math.max(5, weapon.fireCooldown - 1); } }
     ];
 
     function openUpgradeMenu() {
         isPaused = true;
         upgradeMenu.style.display = 'flex';
         choicesContainer.innerHTML = '';
-
         let available = upgradesPool.filter(upgrade => upgrade.available());
         if (available.length < 3) available = upgradesPool;
-
-        const options = [...available].sort(() => Math.random() - 0.5).slice(0, 3);
-        options.forEach(opt => {
+        [...available].sort(() => Math.random() - 0.5).slice(0, 3).forEach(opt => {
             const div = document.createElement('div');
             div.className = 'choice';
             div.innerHTML = `<h3>${opt.name}</h3><p>${opt.desc}</p><small>Aktuell: ${opt.current()}</small>`;
-            div.onclick = () => {
-                if (opt.available()) opt.action();
-                closeUpgradeMenu();
-            };
+            div.onclick = () => { if (opt.available()) opt.action(); closeUpgradeMenu(); };
             choicesContainer.appendChild(div);
         });
     }
@@ -322,22 +291,18 @@
 
     function update() {
         if (!gameRunning) return;
-        if (isPaused) {
-            requestAnimationFrame(update);
-            return;
-        }
+        if (isPaused) { requestAnimationFrame(update); return; }
 
         frameCount++;
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+        applyScreenShake();
+        drawBiomeBackground();
         updateStars();
+        updateScenery();
+        drawSpeedLines();
         handleLevelProgression();
         handlePlayer();
         handleTimers();
-
         if (mouseDown) tryFireBullets();
-
         handleSpawning();
         updateBullets();
         updateEnemies();
@@ -347,31 +312,134 @@
         updateParticles();
         updateSatellites();
         drawPlayer();
+        drawTransitionOverlay();
         drawUI();
         enforceEntityCaps();
-
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         requestAnimationFrame(update);
     }
 
-    function threatLevel() {
-        return 1 + Math.min(4.5, (level - 1) * 0.16 + score / 85000);
+    function applyScreenShake() {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        if (screenShake > 0) {
+            const shake = Math.min(12, screenShake) * .45;
+            ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+            screenShake--;
+        }
+    }
+
+    function drawBiomeBackground() {
+        const biome = activeBiome();
+        const gradient = ctx.createRadialGradient(canvas.width * .72, canvas.height * .42, 30, canvas.width * .5, canvas.height * .5, Math.max(canvas.width, canvas.height));
+        gradient.addColorStop(0, biome.bg2);
+        gradient.addColorStop(.55, biome.bg1);
+        gradient.addColorStop(1, '#000');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(-30, -30, canvas.width + 60, canvas.height + 60);
+
+        ctx.globalAlpha = .12;
+        ctx.strokeStyle = biome.grid;
+        ctx.lineWidth = 1;
+        const offset = (frameCount * (1.4 + threatLevel() * .5)) % 80;
+        for (let x = -80 + offset; x < canvas.width + 80; x += 80) {
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x - 220, canvas.height); ctx.stroke();
+        }
+        for (let y = canvas.height * .62; y < canvas.height + 90; y += 42) {
+            ctx.beginPath(); ctx.moveTo(0, y + offset * .15); ctx.lineTo(canvas.width, y + offset * .15); ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
     }
 
     function updateStars() {
+        const biome = activeBiome();
         ctx.shadowBlur = 0;
-        ctx.fillStyle = '#fff';
         const threat = threatLevel();
         stars.forEach(s => {
-            s.x -= s.speed * threat;
-            if (s.x < 0) {
-                s.x = canvas.width;
-                s.y = Math.random() * canvas.height;
-            }
+            s.x -= s.speed * threat * biome.speed;
+            if (s.x < 0) { s.x = canvas.width; s.y = Math.random() * canvas.height; }
+            ctx.globalAlpha = s.alpha;
+            ctx.fillStyle = biome.star;
+            ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2); ctx.fill();
+        });
+        ctx.globalAlpha = 1;
+    }
+
+    function drawSpeedLines() {
+        if (frameCount % 2 !== 0) return;
+        const biome = activeBiome();
+        ctx.globalAlpha = .18;
+        ctx.strokeStyle = biome.accent;
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 8; i++) {
+            const y = Math.random() * canvas.height;
+            const x = Math.random() * canvas.width;
             ctx.beginPath();
-            ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - 60 - threatLevel() * 24, y + (Math.random() - .5) * 8);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    function spawnScenery(initial = false) {
+        const biome = activeBiome();
+        sceneryObjects.push({
+            x: initial ? Math.random() * canvas.width : canvas.width + 80,
+            y: 50 + Math.random() * (canvas.height - 100),
+            size: 18 + Math.random() * 70,
+            speed: .7 + Math.random() * 2.2,
+            type: biome.scenery,
+            rot: Math.random() * Math.PI * 2,
+            spin: (Math.random() - .5) * .02,
+            alpha: .16 + Math.random() * .28
         });
     }
+
+    function updateScenery() {
+        const biome = activeBiome();
+        if (sceneryObjects.length < LIMITS.scenery && Math.random() < .035) spawnScenery();
+        for (let i = sceneryObjects.length - 1; i >= 0; i--) {
+            const o = sceneryObjects[i];
+            o.x -= o.speed * threatLevel() * biome.speed;
+            o.rot += o.spin;
+            drawSceneryObject(o, biome);
+            if (o.x < -160) sceneryObjects.splice(i, 1);
+        }
+    }
+
+    function drawSceneryObject(o, biome) {
+        ctx.save();
+        ctx.globalAlpha = o.alpha;
+        ctx.translate(o.x, o.y);
+        ctx.rotate(o.rot);
+        ctx.strokeStyle = biome.accent;
+        ctx.fillStyle = biome.accent2;
+        ctx.shadowBlur = 16;
+        ctx.shadowColor = biome.accent;
+        ctx.lineWidth = 2;
+
+        if (o.type === 'rings') {
+            ctx.beginPath(); ctx.ellipse(0, 0, o.size, o.size * .45, 0, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(0, 0, o.size * .22, 0, Math.PI * 2); ctx.stroke();
+        } else if (o.type === 'embers') {
+            ctx.beginPath(); ctx.moveTo(0, -o.size); ctx.lineTo(o.size * .45, 0); ctx.lineTo(0, o.size); ctx.lineTo(-o.size * .45, 0); ctx.closePath(); ctx.fill();
+        } else if (o.type === 'bubbles') {
+            ctx.beginPath(); ctx.arc(0, 0, o.size * .55, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(o.size * .18, -o.size * .16, o.size * .13, 0, Math.PI * 2); ctx.fill();
+        } else if (o.type === 'grid') {
+            ctx.strokeRect(-o.size * .5, -o.size * .5, o.size, o.size);
+            ctx.beginPath(); ctx.moveTo(-o.size * .5, 0); ctx.lineTo(o.size * .5, 0); ctx.moveTo(0, -o.size * .5); ctx.lineTo(0, o.size * .5); ctx.stroke();
+        } else if (o.type === 'debris') {
+            ctx.beginPath(); ctx.moveTo(-o.size, -o.size * .3); ctx.lineTo(o.size * .4, -o.size * .55); ctx.lineTo(o.size, o.size * .15); ctx.lineTo(-o.size * .2, o.size * .5); ctx.closePath(); ctx.stroke();
+        } else {
+            ctx.beginPath(); ctx.moveTo(0, -o.size); ctx.lineTo(o.size * .8, 0); ctx.lineTo(0, o.size); ctx.lineTo(-o.size * .8, 0); ctx.closePath(); ctx.stroke();
+        }
+        ctx.restore();
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+    }
+
+    function threatLevel() { return 1 + Math.min(4.5, (level - 1) * 0.16 + score / 85000); }
 
     function handleLevelProgression() {
         while (score >= nextLevelScore) {
@@ -388,37 +456,22 @@
         player.y += (mouse.y - player.y) * speed;
         player.x = Math.max(50, Math.min(canvas.width - 50, player.x));
         player.y = Math.max(20, Math.min(canvas.height - 20, player.y));
-
         if (frameCount % 2 === 0) {
-            particles.push({ x: player.x - 30, y: player.y + (Math.random() * 16 - 8), size: 8, life: 20, maxLife: 20, color: '#0ff', vx: -3 - threatLevel(), vy: 0 });
+            particles.push({ x: player.x - 30, y: player.y + (Math.random() * 16 - 8), size: 8, life: 20, maxLife: 20, color: activeBiome().accent, vx: -3 - threatLevel(), vy: 0 });
         }
     }
 
     function handleTimers() {
         if (weapon.cooldownLeft > 0) weapon.cooldownLeft--;
-
-        Object.keys(effects).forEach(key => {
-            if (effects[key] > 0) effects[key]--;
-        });
-
+        Object.keys(effects).forEach(key => { if (effects[key] > 0) effects[key]--; });
         if (invincibleTimer > 0) invincibleTimer--;
         isInvincible = invincibleTimer > 0 || effects.shield > 0;
+        if (transitionFrames > 0) transitionFrames--;
     }
 
-    function currentFireCooldown() {
-        const rapidBonus = effects.rapid > 0 ? 0.48 : 1;
-        return Math.max(3, Math.round(weapon.fireCooldown * rapidBonus));
-    }
-
-    function currentBulletCount() {
-        return Math.min(LIMITS.bulletCount + 1, weapon.bulletCount + (effects.spread > 0 ? 1 : 0));
-    }
-
-    function tryFireBullets() {
-        if (weapon.cooldownLeft > 0) return;
-        fireBullets();
-        weapon.cooldownLeft = currentFireCooldown();
-    }
+    function currentFireCooldown() { return Math.max(3, Math.round(weapon.fireCooldown * (effects.rapid > 0 ? 0.48 : 1))); }
+    function currentBulletCount() { return Math.min(LIMITS.bulletCount + 1, weapon.bulletCount + (effects.spread > 0 ? 1 : 0)); }
+    function tryFireBullets() { if (weapon.cooldownLeft > 0) return; fireBullets(); weapon.cooldownLeft = currentFireCooldown(); }
 
     function updateSatellites() {
         satellites.forEach((sat, index) => {
@@ -426,18 +479,11 @@
             const radius = 58 + index * 15;
             const satX = player.x + Math.cos(sat.angle) * radius;
             const satY = player.y + Math.sin(sat.angle) * radius;
-
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = '#f0f';
-            ctx.fillStyle = '#f0f';
-            ctx.beginPath();
-            ctx.arc(satX, satY, 6, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-
+            ctx.shadowBlur = 10; ctx.shadowColor = activeBiome().accent2; ctx.fillStyle = activeBiome().accent2;
+            ctx.beginPath(); ctx.arc(satX, satY, 6, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
             sat.cooldown--;
             if (sat.cooldown <= 0 && bullets.length < LIMITS.bullets) {
-                bullets.push({ x: satX, y: satY, speed: 8, vy: 0, size: 3, damage: 7, color: '#f0f', isEnemy: false });
+                bullets.push({ x: satX, y: satY, speed: 8, vy: 0, size: 3, damage: 7, color: activeBiome().accent2, isEnemy: false });
                 sat.cooldown = 22;
             }
         });
@@ -446,100 +492,58 @@
     function fireBullets() {
         const count = currentBulletCount();
         const spread = count === 1 ? 0 : 0.16;
-
         for (let i = 0; i < count; i++) {
             const angle = (i - (count - 1) / 2) * spread;
-            const vy = Math.sin(angle) * 4.2;
-            bullets.push({
-                x: player.x + 24,
-                y: player.y,
-                speed: 12.5,
-                vy,
-                size: 4 * weapon.bulletSizeMod,
-                damage: Math.round(8 + weapon.bulletSizeMod * 5),
-                color: '#ff0',
-                isEnemy: false
-            });
+            bullets.push({ x: player.x + 24, y: player.y, speed: 12.5, vy: Math.sin(angle) * 4.2, size: 4 * weapon.bulletSizeMod, damage: Math.round(8 + weapon.bulletSizeMod * 5), color: '#ff0', isEnemy: false });
         }
     }
 
     function updateBullets() {
         for (let i = bullets.length - 1; i >= 0; i--) {
             const b = bullets[i];
-            b.x += b.speed;
-            b.y += b.vy || 0;
-
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = b.color || '#ff0';
-            ctx.fillStyle = b.color || '#ff0';
-            ctx.beginPath();
-            ctx.ellipse(b.x, b.y, Math.max(4, b.size * 2), Math.max(2, b.size / 2), 0, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-
-            if (b.isEnemy && !isInvincible && Math.hypot(player.x - b.x, player.y - b.y) < b.size + 14) {
-                bullets.splice(i, 1);
-                damagePlayer(12, b.x, b.y);
-                continue;
-            }
-
-            if (b.x > canvas.width + 90 || b.x < -90 || b.y < -90 || b.y > canvas.height + 90) {
-                bullets.splice(i, 1);
-            }
+            b.x += b.speed; b.y += b.vy || 0;
+            ctx.shadowBlur = 15; ctx.shadowColor = b.color || '#ff0'; ctx.fillStyle = b.color || '#ff0';
+            ctx.beginPath(); ctx.ellipse(b.x, b.y, Math.max(4, b.size * 2), Math.max(2, b.size / 2), 0, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+            if (b.isEnemy && !isInvincible && Math.hypot(player.x - b.x, player.y - b.y) < b.size + 14) { bullets.splice(i, 1); damagePlayer(12, b.x, b.y); continue; }
+            if (b.x > canvas.width + 90 || b.x < -90 || b.y < -90 || b.y > canvas.height + 90) bullets.splice(i, 1);
         }
     }
 
     function handleSpawning() {
         const bossActive = bosses.length > 0;
         const threat = threatLevel();
-
-        if (!bossActive && enemies.length < LIMITS.enemies && Math.random() < 0.018 + threat * 0.006) spawnEnemy();
-        if (!bossActive && worms.length < LIMITS.worms && Math.random() < 0.0014 + threat * 0.00035) spawnWorm();
-
-        if (level > 1 && level % 3 === 0 && !bossActive && !bossDefeatedThisLevel) {
-            spawnBoss();
-        }
-
+        const biome = activeBiome();
+        if (!bossActive && enemies.length < LIMITS.enemies && Math.random() < (0.018 + threat * 0.006) * biome.spawn) spawnEnemy();
+        if (!bossActive && worms.length < LIMITS.worms && Math.random() < (0.0014 + threat * 0.00035) * biome.spawn) spawnWorm();
+        if (level > 1 && level % 3 === 0 && !bossActive && !bossDefeatedThisLevel) spawnBoss();
         if (powerUps.length < LIMITS.powerUps && Math.random() < 0.0038) spawnPowerUp();
+        if (!bossActive && biome.hazard > 0 && Math.random() < biome.hazard) spawnHazardEnemy();
     }
 
     function spawnEnemy() {
         const threat = threatLevel();
-        enemies.push({
-            x: canvas.width + 50,
-            y: 40 + Math.random() * (canvas.height - 80),
-            size: 18 + Math.random() * 20,
-            hp: 14 + level * 2,
-            speed: 2.3 + threat + Math.random() * 1.2,
-            rotation: 0,
-            rotSpeed: (Math.random() - 0.5) * 0.12
-        });
+        const biome = activeBiome();
+        enemies.push({ x: canvas.width + 50, y: 40 + Math.random() * (canvas.height - 80), size: 18 + Math.random() * 20, hp: 14 + level * 2, speed: (2.3 + threat + Math.random() * 1.2) * biome.speed, rotation: 0, rotSpeed: (Math.random() - 0.5) * 0.12, color: biome.enemy, kind: 'normal' });
+    }
+
+    function spawnHazardEnemy() {
+        const biome = activeBiome();
+        enemies.push({ x: canvas.width + 70, y: 50 + Math.random() * (canvas.height - 100), size: 28, hp: 30 + level * 3, speed: 2.0 * biome.speed, rotation: 0, rotSpeed: .08, color: biome.accent2, kind: 'mine' });
     }
 
     function updateEnemies() {
         for (let i = enemies.length - 1; i >= 0; i--) {
             const e = enemies[i];
-            e.x -= e.speed;
-            e.rotation += e.rotSpeed;
-
-            ctx.save();
-            ctx.translate(e.x, e.y);
-            ctx.rotate(e.rotation);
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = '#f00';
-            ctx.fillStyle = '#f00';
+            e.x -= e.speed; e.rotation += e.rotSpeed;
+            ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.rotation); ctx.shadowBlur = 10; ctx.shadowColor = e.color; ctx.fillStyle = e.color;
             ctx.beginPath();
-            for (let j = 0; j < 6; j++) {
-                const angle = (Math.PI * 2 / 6) * j;
-                const r = e.size * (j % 2 === 0 ? 1 : 0.62);
-                if (j === 0) ctx.moveTo(r, 0);
-                else ctx.lineTo(r * Math.cos(angle), r * Math.sin(angle));
+            const points = e.kind === 'mine' ? 8 : 6;
+            for (let j = 0; j < points; j++) {
+                const angle = (Math.PI * 2 / points) * j;
+                const r = e.size * (j % 2 === 0 ? 1 : 0.55);
+                if (j === 0) ctx.moveTo(r, 0); else ctx.lineTo(r * Math.cos(angle), r * Math.sin(angle));
             }
-            ctx.closePath();
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            ctx.restore();
-
+            ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0; ctx.restore();
             if (checkEnemyCollisions(e, i)) continue;
             if (e.x < -70) enemies.splice(i, 1);
         }
@@ -548,17 +552,8 @@
     function spawnWorm() {
         const startY = Math.random() * (canvas.height - 200) + 100;
         const segmentCount = Math.min(14, 6 + Math.floor(level / 2));
-        const worm = { segments: [], speed: 1.8 + threatLevel() * 0.3, angle: 0 };
-
-        for (let i = 0; i < segmentCount; i++) {
-            worm.segments.push({
-                x: canvas.width + (i * 22),
-                y: startY,
-                size: i === 0 ? 20 : 14,
-                hp: i === 0 ? 35 : 18,
-                isHead: i === 0
-            });
-        }
+        const worm = { segments: [], speed: (1.8 + threatLevel() * 0.3) * activeBiome().speed, angle: 0 };
+        for (let i = 0; i < segmentCount; i++) worm.segments.push({ x: canvas.width + (i * 22), y: startY, size: i === 0 ? 20 : 14, hp: i === 0 ? 35 : 18, isHead: i === 0 });
         worms.push(worm);
     }
 
@@ -566,238 +561,98 @@
         for (let w = worms.length - 1; w >= 0; w--) {
             const worm = worms[w];
             const head = worm.segments[0];
-            if (!head) {
-                worms.splice(w, 1);
-                continue;
-            }
-
-            head.x -= worm.speed;
-            worm.angle += 0.05;
-            head.y += Math.sin(worm.angle) * 3;
-
+            if (!head) { worms.splice(w, 1); continue; }
+            head.x -= worm.speed; worm.angle += 0.05; head.y += Math.sin(worm.angle) * 3;
             for (let i = 1; i < worm.segments.length; i++) {
-                const current = worm.segments[i];
-                const target = worm.segments[i - 1];
-                const dx = target.x - current.x;
-                const dy = target.y - current.y;
-                const distance = Math.hypot(dx, dy);
-                if (distance > 15) {
-                    current.x += dx * 0.2;
-                    current.y += dy * 0.2;
-                }
+                const current = worm.segments[i], target = worm.segments[i - 1];
+                const dx = target.x - current.x, dy = target.y - current.y, distance = Math.hypot(dx, dy);
+                if (distance > 15) { current.x += dx * 0.2; current.y += dy * 0.2; }
             }
-
             let wormDead = false;
             for (let s = worm.segments.length - 1; s >= 0; s--) {
                 const seg = worm.segments[s];
-                ctx.shadowBlur = 15;
-                ctx.shadowColor = '#d0d';
-                ctx.beginPath();
-                ctx.arc(seg.x, seg.y, seg.size, 0, Math.PI * 2);
-                ctx.fillStyle = seg.isHead ? '#ffd700' : '#d0d';
-                ctx.fill();
-                ctx.shadowBlur = 0;
-
-                if (!isInvincible && Math.hypot(player.x - seg.x, player.y - seg.y) < seg.size + 14) {
-                    damagePlayer(20, seg.x, seg.y);
-                    destroyWorm(w);
-                    wormDead = true;
-                    break;
-                }
-
+                ctx.shadowBlur = 15; ctx.shadowColor = activeBiome().accent2; ctx.beginPath(); ctx.arc(seg.x, seg.y, seg.size, 0, Math.PI * 2); ctx.fillStyle = seg.isHead ? '#ffd700' : activeBiome().accent2; ctx.fill(); ctx.shadowBlur = 0;
+                if (!isInvincible && Math.hypot(player.x - seg.x, player.y - seg.y) < seg.size + 14) { damagePlayer(20, seg.x, seg.y); destroyWorm(w); wormDead = true; break; }
                 for (let b = bullets.length - 1; b >= 0; b--) {
-                    const bullet = bullets[b];
-                    if (bullet.isEnemy) continue;
+                    const bullet = bullets[b]; if (bullet.isEnemy) continue;
                     if (Math.hypot(bullet.x - seg.x, bullet.y - seg.y) < seg.size + bullet.size) {
-                        bullets.splice(b, 1);
-                        seg.hp -= bullet.damage || 10;
+                        bullets.splice(b, 1); seg.hp -= bullet.damage || 10;
                         if (seg.hp <= 0) {
-                            if (seg.isHead) {
-                                score += 500;
-                                createMegaExplosion(seg.x, seg.y);
-                                showMessage('MEGA KILL!');
-                                destroyWorm(w);
-                                wormDead = true;
-                            } else {
-                                createExplosion(seg.x, seg.y, '#ffaa00');
-                                worm.segments.splice(s, 1);
-                                score += 65;
-                            }
+                            if (seg.isHead) { score += 500; createMegaExplosion(seg.x, seg.y); showMessage('MEGA KILL!'); destroyWorm(w); wormDead = true; }
+                            else { createExplosion(seg.x, seg.y, '#ffaa00'); worm.segments.splice(s, 1); score += 65; }
                         }
                         break;
                     }
                 }
                 if (wormDead) break;
             }
-
             if (wormDead) continue;
             if (head.x < -140) worms.splice(w, 1);
         }
     }
 
-    function destroyWorm(index) {
-        if (!worms[index]) return;
-        worms[index].segments.forEach(seg => createExplosion(seg.x, seg.y, '#d0d'));
-        worms.splice(index, 1);
-    }
+    function destroyWorm(index) { if (!worms[index]) return; worms[index].segments.forEach(seg => createExplosion(seg.x, seg.y, activeBiome().accent2)); worms.splice(index, 1); }
 
     function spawnBoss() {
         showMessage('WARNUNG: BOSS INCOMING!');
         const hp = 520 + level * 125;
-        bosses.push({
-            x: canvas.width + 220,
-            y: canvas.height / 2,
-            width: 150,
-            height: 112,
-            hp,
-            maxHp: hp,
-            speed: 1.8 + level * 0.04,
-            dirY: 1,
-            shootTimer: 0,
-            phase: 1,
-            pulse: 0
-        });
+        bosses.push({ x: canvas.width + 220, y: canvas.height / 2, width: 150, height: 112, hp, maxHp: hp, speed: 1.8 + level * 0.04, dirY: 1, shootTimer: 0, phase: 1, pulse: 0 });
     }
 
     function updateBosses() {
         for (let i = bosses.length - 1; i >= 0; i--) {
             const boss = bosses[i];
             if (boss.x > canvas.width - 260) boss.x -= 2.3;
-
             boss.phase = boss.hp < boss.maxHp * 0.45 ? 2 : 1;
-            boss.pulse += 0.08;
-            boss.y += boss.speed * boss.dirY * boss.phase;
+            boss.pulse += 0.08; boss.y += boss.speed * boss.dirY * boss.phase;
             if (boss.y < 110 || boss.y > canvas.height - 110) boss.dirY *= -1;
-
             boss.shootTimer++;
             const shootDelay = boss.phase === 2 ? 28 : 42;
             if (boss.shootTimer >= shootDelay) {
                 const pattern = boss.phase === 2 ? [-2, -1, 0, 1, 2] : [-1, 0, 1];
-                pattern.forEach(j => bullets.push({
-                    x: boss.x - 20,
-                    y: boss.y + j * 18,
-                    speed: boss.phase === 2 ? -7.3 : -6.2,
-                    vy: j * 0.55,
-                    size: 7,
-                    damage: 12,
-                    color: '#f00',
-                    isEnemy: true
-                }));
+                pattern.forEach(j => bullets.push({ x: boss.x - 20, y: boss.y + j * 18, speed: boss.phase === 2 ? -7.3 : -6.2, vy: j * 0.55, size: 7, damage: 12, color: activeBiome().enemy, isEnemy: true }));
                 boss.shootTimer = 0;
             }
-
-            drawBoss(boss);
-            handleBossCollisions(boss, i);
+            drawBoss(boss); handleBossCollisions(boss, i);
         }
     }
 
     function drawBoss(boss) {
-        const x = boss.x;
-        const y = boss.y;
+        const biome = activeBiome();
         const pulse = Math.sin(boss.pulse) * 4;
-
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.shadowBlur = 24;
-        ctx.shadowColor = boss.phase === 2 ? '#f00' : '#0f0';
-
+        ctx.save(); ctx.translate(boss.x, boss.y); ctx.shadowBlur = 24; ctx.shadowColor = boss.phase === 2 ? '#f00' : biome.accent;
         const gradient = ctx.createLinearGradient(-80, -60, 80, 60);
-        gradient.addColorStop(0, boss.phase === 2 ? '#ff003c' : '#00ff88');
-        gradient.addColorStop(0.5, '#091018');
-        gradient.addColorStop(1, '#00f6ff');
-
+        gradient.addColorStop(0, boss.phase === 2 ? '#ff003c' : biome.accent);
+        gradient.addColorStop(0.5, '#091018'); gradient.addColorStop(1, biome.accent2);
         ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(-80, -52);
-        ctx.lineTo(48, -38 - pulse);
-        ctx.lineTo(84, 0);
-        ctx.lineTo(48, 38 + pulse);
-        ctx.lineTo(-80, 52);
-        ctx.lineTo(-52, 0);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        ctx.fillStyle = '#050505';
-        ctx.beginPath();
-        ctx.arc(10, 0, 20 + pulse * 0.25, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = boss.phase === 2 ? '#fff' : '#f00';
-        ctx.beginPath();
-        ctx.arc(10, 0, 10, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#f0f';
-        ctx.fillRect(-92, -34, 32, 13);
-        ctx.fillRect(-92, 21, 32, 13);
-
-        ctx.restore();
-        ctx.shadowBlur = 0;
-
-        ctx.fillStyle = '#333';
-        ctx.fillRect(canvas.width / 2 - 170, 80, 340, 20);
-        ctx.fillStyle = boss.phase === 2 ? '#f00' : '#0f0';
-        ctx.fillRect(canvas.width / 2 - 170, 80, 340 * Math.max(0, boss.hp / boss.maxHp), 20);
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px Courier New';
-        ctx.textAlign = 'center';
-        ctx.fillText(boss.phase === 2 ? 'BOSS - RAGE' : 'BOSS', canvas.width / 2, 96);
-        ctx.textAlign = 'left';
+        ctx.beginPath(); ctx.moveTo(-80, -52); ctx.lineTo(48, -38 - pulse); ctx.lineTo(84, 0); ctx.lineTo(48, 38 + pulse); ctx.lineTo(-80, 52); ctx.lineTo(-52, 0); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#050505'; ctx.beginPath(); ctx.arc(10, 0, 20 + pulse * 0.25, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = boss.phase === 2 ? '#fff' : biome.enemy; ctx.beginPath(); ctx.arc(10, 0, 10, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = biome.accent2; ctx.fillRect(-92, -34, 32, 13); ctx.fillRect(-92, 21, 32, 13);
+        ctx.restore(); ctx.shadowBlur = 0;
+        ctx.fillStyle = '#333'; ctx.fillRect(canvas.width / 2 - 170, 80, 340, 20);
+        ctx.fillStyle = boss.phase === 2 ? '#f00' : biome.accent; ctx.fillRect(canvas.width / 2 - 170, 80, 340 * Math.max(0, boss.hp / boss.maxHp), 20);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 14px Courier New'; ctx.textAlign = 'center'; ctx.fillText(boss.phase === 2 ? 'BOSS - RAGE' : 'BOSS', canvas.width / 2, 96); ctx.textAlign = 'left';
     }
 
     function handleBossCollisions(boss, index) {
-        const left = boss.x - 85;
-        const right = boss.x + 85;
-        const top = boss.y - 62;
-        const bottom = boss.y + 62;
-
+        const left = boss.x - 85, right = boss.x + 85, top = boss.y - 62, bottom = boss.y + 62;
         for (let b = bullets.length - 1; b >= 0; b--) {
             const bullet = bullets[b];
-            if (!bullet.isEnemy && bullet.x > left && bullet.x < right && bullet.y > top && bullet.y < bottom) {
-                boss.hp -= bullet.damage || 10;
-                createExplosion(bullet.x, bullet.y, '#fff');
-                bullets.splice(b, 1);
-            }
+            if (!bullet.isEnemy && bullet.x > left && bullet.x < right && bullet.y > top && bullet.y < bottom) { boss.hp -= bullet.damage || 10; createExplosion(bullet.x, bullet.y, '#fff'); bullets.splice(b, 1); }
         }
-
-        if (!isInvincible && player.x > left && player.x < right && player.y > top && player.y < bottom) {
-            damagePlayer(45, player.x, player.y);
-        }
-
-        if (boss.hp <= 0) {
-            createMegaExplosion(boss.x, boss.y);
-            score += 2000 + level * 100;
-            showMessage('BOSS BESIEGT!');
-            bosses.splice(index, 1);
-            bossDefeatedThisLevel = true;
-        }
+        if (!isInvincible && player.x > left && player.x < right && player.y > top && player.y < bottom) damagePlayer(45, player.x, player.y);
+        if (boss.hp <= 0) { createMegaExplosion(boss.x, boss.y); score += 2000 + level * 100; showMessage('BOSS BESIEGT!'); bosses.splice(index, 1); bossDefeatedThisLevel = true; screenShake = 28; }
     }
 
     function checkEnemyCollisions(obj, index) {
-        if (!isInvincible && Math.hypot(player.x - obj.x, player.y - obj.y) < obj.size + 14) {
-            damagePlayer(20, obj.x, obj.y);
-            enemies.splice(index, 1);
-            return true;
-        }
-
+        if (!isInvincible && Math.hypot(player.x - obj.x, player.y - obj.y) < obj.size + 14) { damagePlayer(obj.kind === 'mine' ? 28 : 20, obj.x, obj.y); enemies.splice(index, 1); return true; }
         for (let i = bullets.length - 1; i >= 0; i--) {
-            const b = bullets[i];
-            if (b.isEnemy) continue;
-
+            const b = bullets[i]; if (b.isEnemy) continue;
             if (Math.hypot(b.x - obj.x, b.y - obj.y) < obj.size + b.size) {
-                obj.hp -= b.damage || 10;
-                bullets.splice(i, 1);
-                createExplosion(obj.x, obj.y, '#ffaa00');
-
-                if (obj.hp <= 0) {
-                    enemies.splice(index, 1);
-                    score += Math.floor(22 + obj.size * 1.4);
-                    return true;
-                }
+                obj.hp -= b.damage || 10; bullets.splice(i, 1); createExplosion(obj.x, obj.y, '#ffaa00');
+                if (obj.hp <= 0) { if (obj.kind === 'mine') createMegaExplosion(obj.x, obj.y); enemies.splice(index, 1); score += Math.floor(22 + obj.size * 1.4); return true; }
             }
         }
         return false;
@@ -806,200 +661,108 @@
     function spawnPowerUp() {
         const types = ['health', 'rapid', 'shield', 'spread', 'bomb'];
         const type = types[Math.floor(Math.random() * types.length)];
-        const data = {
-            health: { color: '#0f0', label: '+' },
-            rapid: { color: '#ff0', label: 'R' },
-            shield: { color: '#00f', label: 'S' },
-            spread: { color: '#f0f', label: 'W' },
-            bomb: { color: '#fff', label: 'B' }
-        }[type];
-
-        powerUps.push({
-            x: canvas.width + 25,
-            y: 50 + Math.random() * (canvas.height - 100),
-            size: 15,
-            type,
-            color: data.color,
-            label: data.label,
-            speed: 2.8 + threatLevel() * 0.18
-        });
+        const data = { health: { color: '#0f0', label: '+' }, rapid: { color: '#ff0', label: 'R' }, shield: { color: '#00f', label: 'S' }, spread: { color: '#f0f', label: 'W' }, bomb: { color: '#fff', label: 'B' } }[type];
+        powerUps.push({ x: canvas.width + 25, y: 50 + Math.random() * (canvas.height - 100), size: 15, type, color: data.color, label: data.label, speed: 2.8 + threatLevel() * 0.18 });
     }
 
     function updatePowerUps() {
         for (let i = powerUps.length - 1; i >= 0; i--) {
-            const p = powerUps[i];
-            p.x -= p.speed;
-
+            const p = powerUps[i]; p.x -= p.speed;
             if (magnetRange > 0) {
                 const d = Math.hypot(player.x - p.x, player.y - p.y);
-                if (d < magnetRange) {
-                    const angle = Math.atan2(player.y - p.y, player.x - p.x);
-                    p.x += Math.cos(angle) * 5.5;
-                    p.y += Math.sin(angle) * 5.5;
-                }
+                if (d < magnetRange) { const angle = Math.atan2(player.y - p.y, player.x - p.x); p.x += Math.cos(angle) * 5.5; p.y += Math.sin(angle) * 5.5; }
             }
-
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = p.color;
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#000';
-            ctx.font = 'bold 16px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText(p.label, p.x, p.y + 5);
-            ctx.textAlign = 'left';
-            ctx.shadowBlur = 0;
-
-            if (Math.hypot(player.x - p.x, player.y - p.y) < 32) {
-                activatePowerUp(p.type);
-                powerUps.splice(i, 1);
-                continue;
-            }
-
+            ctx.shadowBlur = 15; ctx.shadowColor = p.color; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = '#000'; ctx.font = 'bold 16px Arial'; ctx.textAlign = 'center'; ctx.fillText(p.label, p.x, p.y + 5); ctx.textAlign = 'left'; ctx.shadowBlur = 0;
+            if (Math.hypot(player.x - p.x, player.y - p.y) < 32) { activatePowerUp(p.type); powerUps.splice(i, 1); continue; }
             if (p.x < -60) powerUps.splice(i, 1);
         }
     }
 
     function activatePowerUp(type) {
         createExplosion(player.x, player.y, '#fff');
-
-        if (type === 'health') {
-            health = Math.min(health + 30, 100);
-            showMessage('REPAIRED!');
-        } else if (type === 'rapid') {
-            effects.rapid = FPS * 8;
-            showMessage('RAPID FIRE 8s!');
-        } else if (type === 'shield') {
-            effects.shield = FPS * 6;
-            invincibleTimer = Math.max(invincibleTimer, FPS * 6);
-            showMessage('SHIELD 6s!');
-        } else if (type === 'spread') {
-            effects.spread = FPS * 8;
-            showMessage('SPREAD 8s!');
-        } else if (type === 'bomb') {
-            smartBomb();
-            showMessage('SCREEN CLEAR!');
-        }
+        if (type === 'health') { health = Math.min(health + 30, 100); showMessage('REPAIRED!'); }
+        else if (type === 'rapid') { effects.rapid = FPS * 8; showMessage('RAPID FIRE 8s!'); }
+        else if (type === 'shield') { effects.shield = FPS * 6; invincibleTimer = Math.max(invincibleTimer, FPS * 6); showMessage('SHIELD 6s!'); }
+        else if (type === 'spread') { effects.spread = FPS * 8; showMessage('SPREAD 8s!'); }
+        else if (type === 'bomb') { smartBomb(); showMessage('SCREEN CLEAR!'); }
     }
 
     function smartBomb() {
         enemies.forEach(e => createExplosion(e.x, e.y, '#ffaa00'));
-        worms.forEach(w => w.segments.forEach(s => createExplosion(s.x, s.y, '#d0d')));
+        worms.forEach(w => w.segments.forEach(s => createExplosion(s.x, s.y, activeBiome().accent2)));
         score += enemies.length * 35 + worms.length * 180;
-        enemies = [];
-        worms = [];
-        bullets = bullets.filter(b => !b.isEnemy);
-        bosses.forEach(boss => {
-            boss.hp -= 120;
-            createExplosion(boss.x, boss.y, '#fff');
-        });
+        enemies = []; worms = []; bullets = bullets.filter(b => !b.isEnemy);
+        bosses.forEach(boss => { boss.hp -= 120; createExplosion(boss.x, boss.y, '#fff'); });
+        screenShake = 18;
     }
 
     function damagePlayer(amount, x, y) {
         if (isInvincible) return;
-        health -= amount;
-        invincibleTimer = 55;
-        createExplosion(x, y, '#f00');
+        health -= amount; invincibleTimer = 55; screenShake = 12; createExplosion(x, y, '#f00');
         if (health <= 0) gameOver();
     }
 
     function createExplosion(x, y, color) {
-        for (let i = 0; i < 10; i++) {
-            particles.push({
-                x,
-                y,
-                vx: (Math.random() - 0.5) * 6,
-                vy: (Math.random() - 0.5) * 6,
-                life: 30,
-                maxLife: 30,
-                color,
-                size: 3
-            });
-        }
+        for (let i = 0; i < 10; i++) particles.push({ x, y, vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6, life: 30, maxLife: 30, color, size: 3 });
     }
 
     function createMegaExplosion(x, y) {
-        for (let i = 0; i < 45; i++) {
-            particles.push({
-                x,
-                y,
-                vx: (Math.random() - 0.5) * 15,
-                vy: (Math.random() - 0.5) * 15,
-                life: 50,
-                maxLife: 50,
-                color: `hsl(${Math.random() * 60}, 100%, 50%)`,
-                size: Math.random() * 8 + 2
-            });
-        }
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        for (let i = 0; i < 45; i++) particles.push({ x, y, vx: (Math.random() - 0.5) * 15, vy: (Math.random() - 0.5) * 15, life: 50, maxLife: 50, color: `hsl(${Math.random() * 60}, 100%, 50%)`, size: Math.random() * 8 + 2 });
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.72)'; ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
     function updateParticles() {
         for (let i = particles.length - 1; i >= 0; i--) {
-            const p = particles[i];
-            p.life--;
-            p.x += p.vx || 0;
-            p.y += p.vy || 0;
-            ctx.globalAlpha = Math.max(0, p.life / (p.maxLife || 30));
-            ctx.shadowBlur = 10;
-            ctx.shadowColor = p.color;
-            ctx.fillStyle = p.color;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, p.size || 2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            ctx.globalAlpha = 1;
-            if (p.life <= 0 || p.x < -120 || p.x > canvas.width + 120 || p.y < -120 || p.y > canvas.height + 120) {
-                particles.splice(i, 1);
-            }
+            const p = particles[i]; p.life--; p.x += p.vx || 0; p.y += p.vy || 0;
+            ctx.globalAlpha = Math.max(0, p.life / (p.maxLife || 30)); ctx.shadowBlur = 10; ctx.shadowColor = p.color; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size || 2, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+            if (p.life <= 0 || p.x < -120 || p.x > canvas.width + 120 || p.y < -120 || p.y > canvas.height + 120) particles.splice(i, 1);
         }
     }
 
     function drawPlayer() {
-        ctx.save();
-        ctx.translate(player.x, player.y);
-
-        if (isInvincible && Math.floor(Date.now() / 100) % 2 === 0) {
-            ctx.globalAlpha = 0.55;
-        }
-
-        if (effects.shield > 0) {
-            ctx.shadowBlur = 22;
-            ctx.shadowColor = '#00f';
-            ctx.strokeStyle = '#44f';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(0, 0, 34, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-
-        ctx.shadowBlur = 20;
-        ctx.shadowColor = '#0ff';
-        ctx.fillStyle = '#0af';
-        ctx.beginPath();
-        ctx.moveTo(27, 0);
-        ctx.lineTo(-22, 18);
-        ctx.lineTo(-10, 0);
-        ctx.lineTo(-22, -18);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.fillStyle = '#0ff';
-        ctx.beginPath();
-        ctx.arc(0, 0, 5, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.shadowBlur = 0;
-        ctx.restore();
+        ctx.save(); ctx.translate(player.x, player.y);
+        if (isInvincible && Math.floor(Date.now() / 100) % 2 === 0) ctx.globalAlpha = 0.55;
+        if (effects.shield > 0) { ctx.shadowBlur = 22; ctx.shadowColor = '#00f'; ctx.strokeStyle = '#44f'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, 34, 0, Math.PI * 2); ctx.stroke(); }
+        ctx.shadowBlur = 20; ctx.shadowColor = activeBiome().accent; ctx.fillStyle = '#0af';
+        ctx.beginPath(); ctx.moveTo(27, 0); ctx.lineTo(-22, 18); ctx.lineTo(-10, 0); ctx.lineTo(-22, -18); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = activeBiome().accent; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; ctx.restore();
     }
 
     function levelUp() {
+        const previousBiome = currentBiomeIndex;
+        currentBiomeIndex = (level - 1) % BIOMES.length;
+        if (currentBiomeIndex !== previousBiome) {
+            transitionFrames = 90;
+            screenShake = 22;
+            seedScenery();
+            showMessage(`LEVEL ${level}\n${activeBiome().name}`);
+            createMegaExplosion(canvas.width * .55, canvas.height * .5);
+        }
         document.getElementById('levelVal').innerText = level;
         document.getElementById('nextLevelVal').innerText = nextLevelScore;
         openUpgradeMenu();
+    }
+
+    function drawTransitionOverlay() {
+        if (transitionFrames <= 0) return;
+        const biome = activeBiome();
+        const alpha = transitionFrames / 90;
+        ctx.globalAlpha = alpha * .34;
+        ctx.fillStyle = biome.accent;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 58px Courier New';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 24;
+        ctx.shadowColor = biome.accent;
+        ctx.fillText(biome.name.toUpperCase(), canvas.width / 2, canvas.height * .32);
+        ctx.font = 'bold 24px Courier New';
+        ctx.fillText('NEW SECTOR ONLINE', canvas.width / 2, canvas.height * .32 + 42);
+        ctx.shadowBlur = 0;
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = 1;
     }
 
     function enforceEntityCaps() {
@@ -1007,6 +770,7 @@
         if (particles.length > LIMITS.particles) particles.splice(0, particles.length - LIMITS.particles);
         if (enemies.length > LIMITS.enemies) enemies.splice(0, enemies.length - LIMITS.enemies);
         if (powerUps.length > LIMITS.powerUps) powerUps.splice(0, powerUps.length - LIMITS.powerUps);
+        if (sceneryObjects.length > LIMITS.scenery) sceneryObjects.splice(0, sceneryObjects.length - LIMITS.scenery);
     }
 
     function activeEffectLabel() {
@@ -1017,9 +781,7 @@
         return list.length ? list.join(' / ') : '-';
     }
 
-    function weaponLabel() {
-        return `${currentBulletCount()}x / CD ${currentFireCooldown()} / DMG ${Math.round(8 + weapon.bulletSizeMod * 5)}`;
-    }
+    function weaponLabel() { return `${currentBulletCount()}x / CD ${currentFireCooldown()} / DMG ${Math.round(8 + weapon.bulletSizeMod * 5)}`; }
 
     function showMessage(text) {
         msgBox.innerText = text;
@@ -1035,22 +797,22 @@
         document.getElementById('weaponVal').innerText = weaponLabel();
         document.getElementById('effectVal').innerText = activeEffectLabel();
         document.getElementById('threatVal').innerText = `${threatLevel().toFixed(1)}x`;
+        document.getElementById('biomeVal').innerText = activeBiome().name;
         healthBar.style.width = Math.max(0, health) + '%';
         healthBar.style.background = health < 35 ? '#f00' : '#0f0';
     }
 
     function gameOver() {
         gameRunning = false;
-        setTimeout(() => {
-            alert('GAME OVER\nScore: ' + score + '\nLevel: ' + level);
-            location.reload();
-        }, 100);
+        setTimeout(() => { alert('GAME OVER\nScore: ' + score + '\nLevel: ' + level); location.reload(); }, 100);
     }
 
     window.addEventListener('resize', () => {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
         player.y = Math.min(player.y, canvas.height - 20);
+        initStars();
+        seedScenery();
     });
 
     update();
